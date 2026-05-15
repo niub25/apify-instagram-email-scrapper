@@ -1,0 +1,12 @@
+{
+    "actorSpecification": 1,
+    "name": "instagram-running-email-extractor",
+    "title": "Instagram Running Influencer Email Extractor",
+    "description": "Finds Instagram running/marathon accounts and extracts emails from Instagram Email button, bio text, Linktree, and personal websites.",
+    "version": "1.0",
+    "meta": {
+        "templateId": "js-crawlee-playwright-chrome"
+    },
+    "input": "../INPUT_SCHEMA.json",
+    "dockerfile": "../Dockerfile"
+}
