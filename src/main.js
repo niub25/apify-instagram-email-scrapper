@@ -55,8 +55,8 @@ const {
         'runforlife', 'runningmen', 'hyrox', 'runcoach',
     ],
     minFollowers = 5000,
-    maxResults = 500,
-    maxPagesPerHashtag = 10,    // how many paginated pages to fetch per hashtag (~20 users each)
+    maxResults = 100000,
+    maxPagesPerHashtag = 100,    // how many paginated pages to fetch per hashtag (~20 users each)
     sessionId,
     csrfToken,
     proxyConfiguration,
@@ -94,7 +94,7 @@ const proxy = await Actor.createProxyConfiguration(
 const crawler = new PlaywrightCrawler({
     requestQueue,
     proxyConfiguration: proxy,
-    maxConcurrency: 3,
+    maxConcurrency: 10,
     requestHandlerTimeoutSecs: 120,
     navigationTimeoutSecs: 30,
     maxRequestRetries: 2,
