@@ -1,0 +1,18 @@
+{
+    "name": "instagram-running-email-extractor",
+    "version": "2.0.0",
+    "description": "Extracts emails of Instagram running/marathon influencers with 50k+ followers",
+    "type": "module",
+    "main": "src/main.js",
+    "scripts": {
+        "start": "node src/main.js"
+    },
+    "dependencies": {
+        "apify": "^3.2.2",
+        "crawlee": "^3.9.2",
+        "playwright": "^1.44.0"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}
