@@ -36,8 +36,8 @@
             "title": "Minimum follower count",
             "type": "integer",
             "description": "Only save profiles with at least this many followers.",
-            "minimum": 1000,
-            "default": 5000,
+            "minimum": 5000,
+            "default": 10000,
             "prefill": 5000
         },
         "maxResults": {
