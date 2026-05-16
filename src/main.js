@@ -163,8 +163,8 @@ const {
         'runforlife','runningmen','hyrox','runcoach',
     ],
     minFollowers       = 5000,
-    maxResults         = 500,
-    maxPagesPerHashtag = 10,
+    maxResults         = 50000,
+    maxPagesPerHashtag = 50,
     sessionId,
     proxyConfiguration,
 } = input;
@@ -367,7 +367,7 @@ if (externalLinks.length > 0) {
     const extCrawler = new PlaywrightCrawler({
         requestQueue: extQueue,
         proxyConfiguration: proxyConfig,
-        maxConcurrency: 5,
+        maxConcurrency: 10,
         requestHandlerTimeoutSecs: 45,
         navigationTimeoutSecs: 25,
         maxRequestRetries: 1,
