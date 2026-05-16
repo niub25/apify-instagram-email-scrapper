@@ -1,0 +1,19 @@
+{
+    "name": "instagram-running-email-extractor",
+    "version": "7.0.0",
+    "description": "Extracts emails of Instagram running/marathon influencers — uses direct HTTP for Instagram API (no browser), Playwright only for Linktree/websites",
+    "type": "module",
+    "main": "src/main.js",
+    "scripts": {
+        "start": "node src/main.js"
+    },
+    "dependencies": {
+        "apify": "^3.2.2",
+        "crawlee": "^3.9.2",
+        "playwright": "^1.44.0",
+        "got-scraping": "^4.0.4"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}
