@@ -38,11 +38,11 @@ function isLinkAggregator(url) {
 
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 
-// ─── Cookie manager ───────────────────────────────────────────────────────────
-// Instagram needs a full cookie set (csrftoken, mid, ig_did etc.) not just sessionid.
-// We fetch the homepage first to collect all required cookies, then merge with sessionid.
+// ─── Build full cookie set ────────────────────────────────────────────────────
+// Fetches instagram.com homepage to collect all required cookies,
+// then merges with the user-provided sessionId and csrfToken.
 
-async function buildFullCookies(sessionId, proxyUrl) {
+async function buildFullCookies(sessionId, inputCsrfToken, proxyUrl) {
     log.info('🍪 Fetching Instagram homepage to collect full cookie set...');
     try {
         const res = await gotScraping.get('https://www.instagram.com/', {
@@ -52,14 +52,18 @@ async function buildFullCookies(sessionId, proxyUrl) {
                 'User-Agent': MOBILE_UA,
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Cookie': `sessionid=${sessionId}`,
+                'Cookie': `sessionid=${sessionId}${inputCsrfToken ? `; csrftoken=${inputCsrfToken}` : ''}`,
             },
             timeout: { request: 20000 },
             throwHttpErrors: false,
         });
 
-        // Parse all Set-Cookie headers
+        // Parse all Set-Cookie headers from response
         const cookieMap = { sessionid: sessionId };
+
+        // If user provided csrfToken, use it directly (most reliable)
+        if (inputCsrfToken) cookieMap['csrftoken'] = inputCsrfToken;
+
         const setCookies = res.headers['set-cookie'] ?? [];
         for (const raw of setCookies) {
             const [nameVal] = raw.split(';');
@@ -67,19 +71,24 @@ async function buildFullCookies(sessionId, proxyUrl) {
             if (eqIdx < 0) continue;
             const name = nameVal.slice(0, eqIdx).trim();
             const val  = nameVal.slice(eqIdx + 1).trim();
-            if (name && val) cookieMap[name] = val;
+            // Don't overwrite user-provided csrfToken with fetched one
+            if (name && val && !(name === 'csrftoken' && inputCsrfToken)) {
+                cookieMap[name] = val;
+            }
         }
 
-        const cookieStr = Object.entries(cookieMap).map(([k, v]) => `${k}=${v}`).join('; ');
-        const csrfToken = cookieMap['csrftoken'] ?? '';
+        const cookieStr  = Object.entries(cookieMap).map(([k, v]) => `${k}=${v}`).join('; ');
+        const csrfToken  = cookieMap['csrftoken'] ?? '';
 
         log.info(`🍪 Cookies collected: ${Object.keys(cookieMap).join(', ')}`);
-        log.info(`🍪 CSRF token: ${csrfToken ? '✅' : '❌ missing'}`);
+        log.info(`🍪 CSRF token: ${csrfToken ? '✅' : '❌ missing — provide it in Input'}`);
 
         return { cookieStr, csrfToken };
     } catch (e) {
-        log.warning(`Cookie collection failed: ${e.message} — using sessionid only`);
-        return { cookieStr: `sessionid=${sessionId}`, csrfToken: '' };
+        log.warning(`Cookie collection failed: ${e.message}`);
+        // Fall back to just sessionid + user-provided csrfToken
+        const cookieStr = `sessionid=${sessionId}${inputCsrfToken ? `; csrftoken=${inputCsrfToken}` : ''}`;
+        return { cookieStr, csrfToken: inputCsrfToken ?? '' };
     }
 }
 
@@ -89,7 +98,8 @@ async function igFetch(url, cookieStr, csrfToken, proxyUrl) {
     try {
         const res = await gotScraping.get(url, {
             proxyUrl,
-            followRedirect: true,           // follow redirects but validate final response
+            followRedirect: true,
+            maxRedirects: 5,
             headers: {
                 'User-Agent': MOBILE_UA,
                 'X-IG-App-ID': '936619743392459',
@@ -127,14 +137,14 @@ async function igFetch(url, cookieStr, csrfToken, proxyUrl) {
 
         const body = res.body?.trim() ?? '';
 
-        // Check for login page redirect (HTML returned instead of JSON)
+        // Check for HTML login page instead of JSON
         if (body.startsWith('<!DOCTYPE') || body.startsWith('<html')) {
             log.warning(`Got HTML instead of JSON — session expired or blocked`);
             return null;
         }
 
         if (!body.startsWith('{') && !body.startsWith('[')) {
-            log.warning(`Unexpected response for ${url}: ${body.substring(0, 80)}`);
+            log.warning(`Unexpected response: ${body.substring(0, 100)}`);
             return null;
         }
 
@@ -166,6 +176,7 @@ const {
     maxResults         = 500,
     maxPagesPerHashtag = 10,
     sessionId,
+    csrfToken: inputCsrfToken,      // ← correctly read from input
     proxyConfiguration,
 } = input;
 
@@ -179,9 +190,9 @@ const proxyConfig = await Actor.createProxyConfiguration(
 );
 const proxyUrl = await proxyConfig.newUrl('ig_main');
 
-// ─── Collect full cookie set from Instagram homepage ──────────────────────────
+// ─── Collect full cookie set ──────────────────────────────────────────────────
 
-const { cookieStr, csrfToken } = await buildFullCookies(sessionId, proxyUrl);
+const { cookieStr, csrfToken } = await buildFullCookies(sessionId, inputCsrfToken, proxyUrl);
 
 // ─── Quick API test ───────────────────────────────────────────────────────────
 
@@ -192,31 +203,33 @@ const testData = await igFetch(
 );
 
 if (!testData) {
-    log.error('❌ API test FAILED after cookie collection. Please:');
-    log.error('   1. Get a FRESH sessionid from Chrome DevTools (Console tab):');
+    log.error('❌ API test FAILED. Please:');
+    log.error('   1. Get a FRESH sessionid — open Chrome Console on instagram.com and run:');
     log.error('      document.cookie.split(";").find(c=>c.trim().startsWith("sessionid")).split("=")[1]');
-    log.error('   2. Paste the new value into Input → Session ID → Save & Run');
+    log.error('   2. Get a FRESH csrftoken — run:');
+    log.error('      document.cookie.split(";").find(c=>c.trim().startsWith("csrftoken")).split("=")[1]');
+    log.error('   3. Paste both values into the Input fields and run again.');
     await Actor.exit();
 } else {
-    const sampleCount = (testData?.data?.recent?.sections?.length ?? 0);
+    const sampleCount = testData?.data?.recent?.sections?.length ?? 0;
     log.info(`✅ API working! Got ${sampleCount} sections for #running`);
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
-const seenUsers     = new Set();
-const savedData     = new Map();
-let   totalSaved    = 0;
+const seenUsers  = new Set();
+const savedData  = new Map();
+let   totalSaved = 0;
 
-log.info(`\n🏃 Instagram Email Scraper v9`);
+log.info(`\n🏃 Instagram Email Scraper v9 (fixed)`);
 log.info(`   Hashtags      : ${hashtags.length}`);
 log.info(`   Pages/hashtag : ${maxPagesPerHashtag}`);
 log.info(`   Min followers : ${minFollowers.toLocaleString()}`);
 log.info(`   Max results   : ${maxResults}`);
 
-// ─── PHASE 1: Discover users ──────────────────────────────────────────────────
+// ─── PHASE 1: Discover users via hashtags ─────────────────────────────────────
 
-log.info(`\n📡 PHASE 1: Discovering users via hashtags...`);
+log.info(`\n📡 PHASE 1: Discovering users...`);
 const profilesToCheck = [];
 
 for (const rawTag of hashtags) {
@@ -225,7 +238,7 @@ for (const rawTag of hashtags) {
     if (!tag) continue;
 
     log.info(`\n📌 #${tag}`);
-    let maxId  = '';
+    let maxId   = '';
     let pageNum = 0;
 
     while (pageNum < maxPagesPerHashtag) {
@@ -235,7 +248,7 @@ for (const rawTag of hashtags) {
 
         const data = await igFetch(url, cookieStr, csrfToken, proxyUrl);
 
-        // GraphQL fallback
+        // GraphQL fallback if v1 fails
         if (!data) {
             let gqlUrl = `https://www.instagram.com/explore/tags/${encodeURIComponent(tag)}/?__a=1&__d=dis`;
             if (maxId) gqlUrl += `&max_id=${encodeURIComponent(maxId)}`;
@@ -284,7 +297,7 @@ log.info(`\n👥 Discovered ${profilesToCheck.length} unique users`);
 
 // ─── PHASE 2: Fetch profiles ──────────────────────────────────────────────────
 
-log.info(`\n📡 PHASE 2: Checking profiles...`);
+log.info(`\n📡 PHASE 2: Checking ${profilesToCheck.length} profiles...`);
 const externalLinks = [];
 
 for (const username of profilesToCheck) {
@@ -352,7 +365,7 @@ log.info(`\n✅ Phase 2 done. ${totalSaved} profiles saved.`);
 // ─── PHASE 3: Linktree / websites ────────────────────────────────────────────
 
 if (externalLinks.length > 0) {
-    log.info(`\n🔗 PHASE 3: Scraping ${externalLinks.length} external links...`);
+    log.info(`\n🔗 PHASE 3: Scraping ${externalLinks.length} external links for emails...`);
 
     const extQueue = await RequestQueue.open('ext');
     for (const { username, url } of externalLinks) {
@@ -385,7 +398,9 @@ if (externalLinks.length > 0) {
                 const emails = new Set();
                 for (const e of extractEmails(text)) emails.add(e);
                 for (const href of hrefs) {
-                    if (href.startsWith('mailto:')) emails.add(href.replace('mailto:', '').split('?')[0].trim());
+                    if (href.startsWith('mailto:')) {
+                        emails.add(href.replace('mailto:', '').split('?')[0].trim());
+                    }
                 }
                 if (emails.size > 0) {
                     log.info(`📧 @${uname}: ${[...emails].join(', ')}`);
@@ -393,12 +408,14 @@ if (externalLinks.length > 0) {
                     if (existing) {
                         const merged = mergeEmails(existing.emails, [...emails]);
                         if (merged.length > existing.emails.length) {
-                            existing.emails = merged; existing.hasEmail = true;
+                            existing.emails   = merged;
+                            existing.hasEmail = true;
                             await Dataset.pushData({ ...existing, _updated: true });
                             savedData.set(uname, existing);
                         }
                     }
                 }
+                // Follow outbound links from Linktree to personal sites
                 if (request.label === 'LINKTREE') {
                     const outbound = await page.$$eval('a[href^="http"]', els =>
                         els.map(a => a.href).filter(h =>
@@ -408,7 +425,8 @@ if (externalLinks.length > 0) {
                     ).catch(() => []);
                     for (const url of outbound) {
                         await extQueue.addRequest({
-                            url, label: 'WEBSITE', userData: { username: uname },
+                            url, label: 'WEBSITE',
+                            userData: { username: uname },
                             uniqueKey: `ext:${uname}:${url}`,
                         }).catch(() => {});
                     }
@@ -417,10 +435,13 @@ if (externalLinks.length > 0) {
                 log.warning(`@${uname}: ${e.message}`);
             }
         },
-        failedRequestHandler({ request }) { log.warning(`Skipped: ${request.url}`); },
+        failedRequestHandler({ request }) {
+            log.warning(`Skipped: ${request.url}`);
+        },
     });
 
     await extCrawler.run();
+    log.info(`✅ Phase 3 done.`);
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
@@ -439,5 +460,11 @@ log.info(`   Profiles saved : ${final.length}`);
 log.info(`   With email     : ${withEmail} (${hitRate}%)`);
 log.info(`   Users scanned  : ${seenUsers.size}`);
 
-await Actor.setValue('SUMMARY', { profilesSaved: final.length, withEmail, emailHitRate: `${hitRate}%`, scanned: seenUsers.size });
+await Actor.setValue('SUMMARY', {
+    profilesSaved: final.length,
+    withEmail,
+    emailHitRate:  `${hitRate}%`,
+    scanned:       seenUsers.size,
+});
+
 await Actor.exit();
