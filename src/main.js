@@ -42,20 +42,11 @@ await Actor.init();
 
 const input = await Actor.getInput();
 const {
-    hashtags = [
-        'running','marathon','halfmarathon','runningcommunity',
-        'runnersofinstagram','ultramarathon','trailrunning',
-        'runnerlife','runningmotivation','roadrunning',
-        'marathontraining','runningcoach','runningwomen',
-        'instarunners','runner','runhappy','marathonrunner',
-        'halfmarathontraining','runningdaily','trailrunner',
-        'runninglifestyle','morningrun','runningislife',
-        'marathoners','runningworld','bostonmarathon',
-        'runforlife','runningmen','hyrox','runcoach',
-    ],
+    hashtags: seedHashtags = ['running','marathon','halfmarathon','runnersofinstagram','runningcoach'],
     minFollowers       = 5000,
-    maxResults         = 500000,
-    maxPagesPerHashtag = 100,
+    maxResults         = 10000,
+    maxHashtags        = 50,    // total hashtags including auto-discovered
+    maxPagesPerHashtag = 100,    // pages per hashtag via mobile API (~12 users/page)
     sessionId,
     csrfToken,
     proxyConfiguration,
@@ -70,13 +61,9 @@ const proxyConfig = await Actor.createProxyConfiguration(
     proxyConfiguration ?? { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] }
 );
 
-// ─── Launch a single persistent browser for all Instagram API calls ───────────
-// This is the most reliable approach — Instagram accepts real browser requests
-// We navigate to instagram.com ONCE, inject session cookies, then make all
-// API calls via fetch() inside the page (which uses the session cookies automatically)
+// ─── Launch browser ───────────────────────────────────────────────────────────
 
-log.info('🌐 Launching browser for Instagram API calls...');
-
+log.info('🌐 Launching browser...');
 const proxyUrl  = await proxyConfig.newUrl('ig_browser');
 const proxyHost = proxyUrl ? new URL(proxyUrl) : null;
 
@@ -95,22 +82,20 @@ const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
 });
 
-// Inject session cookies into browser context
 await context.addCookies([
     { name: 'sessionid', value: sessionId,  domain: '.instagram.com', path: '/', httpOnly: true,  secure: true },
     ...(csrfToken ? [{ name: 'csrftoken', value: csrfToken, domain: '.instagram.com', path: '/', secure: true }] : []),
 ]);
 
-// Open one persistent page and navigate to Instagram homepage
 const igPage = await context.newPage();
 
-log.info('📱 Navigating to Instagram homepage...');
+log.info('📱 Establishing Instagram session...');
 await igPage.goto('https://www.instagram.com/', {
     waitUntil: 'domcontentloaded',
     timeout: 30000,
-}).catch(e => log.warning(`Homepage nav warning: ${e.message}`));
+}).catch(e => log.warning(`Nav: ${e.message}`));
 
-// ─── Instagram API caller (runs inside real browser — Instagram can't block it) ─
+// ─── Instagram API caller ─────────────────────────────────────────────────────
 
 async function igApiFetch(apiUrl) {
     try {
@@ -120,130 +105,221 @@ async function igApiFetch(apiUrl) {
                     headers: {
                         'X-IG-App-ID': '936619743392459',
                         'X-ASBD-ID': '129477',
+                        'X-IG-Capabilities': '3brTvw==',
+                        'X-IG-Connection-Type': 'WiFi',
                         'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.9',
                         'X-Requested-With': 'XMLHttpRequest',
                     },
                     credentials: 'include',
                 });
                 if (!r.ok) return { error: r.status };
-                const data = await r.json();
-                return { data };
+                return { data: await r.json() };
             } catch (e) {
                 return { error: e.message };
             }
         }, apiUrl);
-
-        if (result?.error) {
-            log.warning(`API error ${result.error} for ${apiUrl}`);
-            return null;
-        }
+        if (result?.error) { log.warning(`API ${result.error} → ${apiUrl}`); return null; }
         return result?.data ?? null;
     } catch (e) {
-        log.warning(`igApiFetch exception: ${e.message}`);
+        log.warning(`igApiFetch: ${e.message}`);
         return null;
     }
 }
 
-// ─── Test API connection ──────────────────────────────────────────────────────
+// ─── Fetch one page of hashtag posts — tries mobile API first, falls back to web ──
 
-log.info('🔍 Testing Instagram API connection...');
-const testData = await igApiFetch('https://www.instagram.com/api/v1/tags/web_info/?tag_name=running');
+async function fetchHashtagPage(tag, maxId) {
+    // PRIMARY: Instagram mobile feed API (deep pagination support)
+    let url = `https://i.instagram.com/api/v1/feed/tag/?tag_name=${encodeURIComponent(tag)}&rank_token=&ranked_content=true`;
+    if (maxId) url += `&max_id=${encodeURIComponent(maxId)}`;
 
-if (!testData) {
-    log.error('❌ Instagram API test FAILED.');
-    log.error('   → Get a fresh sessionid and csrftoken from Chrome DevTools:');
-    log.error('     sessionid:  document.cookie.split(";").find(c=>c.trim().startsWith("sessionid")).split("=")[1]');
-    log.error('     csrftoken:  document.cookie.split(";").find(c=>c.trim().startsWith("csrftoken")).split("=")[1]');
+    const mobileData = await igApiFetch(url);
+    if (mobileData) {
+        const usernames = [];
+        for (const item of (mobileData?.items ?? [])) {
+            const u = item?.user?.username || item?.owner?.username;
+            if (u) usernames.push(u);
+        }
+        return {
+            usernames,
+            nextMaxId:     mobileData?.next_max_id ?? null,
+            moreAvailable: mobileData?.more_available ?? false,
+            source:        'mobile',
+        };
+    }
+
+    // FALLBACK: web API
+    let webUrl = `https://www.instagram.com/api/v1/tags/web_info/?tag_name=${encodeURIComponent(tag)}`;
+    if (maxId) webUrl += `&max_id=${encodeURIComponent(maxId)}`;
+
+    const webData = await igApiFetch(webUrl);
+    if (webData) {
+        const usernames = [];
+        for (const key of ['recent', 'top']) {
+            for (const section of (webData?.data?.[key]?.sections ?? [])) {
+                for (const m of [
+                    ...(section?.layout_content?.medias ?? []),
+                    ...(section?.layout_content?.fill_media ?? []),
+                ]) {
+                    const u = (m?.media?.user || m?.media?.owner)?.username;
+                    if (u) usernames.push(u);
+                }
+            }
+        }
+        return {
+            usernames,
+            nextMaxId:     webData?.data?.recent?.next_max_id ?? null,
+            moreAvailable: !!webData?.data?.recent?.next_max_id,
+            source:        'web',
+        };
+    }
+
+    return null;
+}
+
+// ─── Discover related hashtags for a given tag ────────────────────────────────
+
+async function discoverRelatedHashtags(tag) {
+    const discovered = new Set();
+
+    // Source 1: related tags API
+    const relData = await igApiFetch(
+        `https://www.instagram.com/api/v1/tags/${encodeURIComponent(tag)}/related/`
+    );
+    for (const rel of (relData?.related_tags ?? [])) {
+        const t = rel?.name?.toLowerCase().trim();
+        if (t) discovered.add(t);
+    }
+
+    // Source 2: tag search/suggest API
+    const searchData = await igApiFetch(
+        `https://www.instagram.com/api/v1/tags/search/?q=${encodeURIComponent(tag)}&count=15`
+    );
+    for (const result of (searchData?.results ?? [])) {
+        const t = result?.name?.toLowerCase().trim();
+        if (t) discovered.add(t);
+    }
+
+    return [...discovered];
+}
+
+// ─── API test ─────────────────────────────────────────────────────────────────
+
+log.info('🔍 Testing API...');
+const testResult = await fetchHashtagPage('running', '');
+if (!testResult) {
+    log.error('❌ API test FAILED — get fresh sessionid + csrftoken from Chrome and try again.');
+    log.error('   sessionid: document.cookie.split(";").find(c=>c.trim().startsWith("sessionid")).split("=")[1]');
+    log.error('   csrftoken: document.cookie.split(";").find(c=>c.trim().startsWith("csrftoken")).split("=")[1]');
     await browser.close();
     await Actor.exit();
-} else {
-    log.info(`✅ Instagram API working!`);
 }
+log.info(`✅ API working via [${testResult.source}] — ${testResult.usernames.length} users on test page | pagination: ${testResult.nextMaxId ? '✅' : '❌'}`);
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
-const seenUsers  = new Set();
-const savedData  = new Map();
-let   totalSaved = 0;
+const seenUsers    = new Set();
+const seenHashtags = new Set();
+const savedData    = new Map();
+let   totalSaved   = 0;
 
-log.info(`\n🏃 Instagram Email Scraper v10`);
-log.info(`   Hashtags      : ${hashtags.length}`);
-log.info(`   Pages/hashtag : ${maxPagesPerHashtag}`);
-log.info(`   Min followers : ${minFollowers.toLocaleString()}`);
-log.info(`   Max results   : ${maxResults}`);
+// Build hashtag queue from seeds — will grow as related tags are discovered
+const hashtagQueue = [...new Set(
+    seedHashtags.map(t => t.replace(/^#/, '').toLowerCase().trim()).filter(Boolean)
+)];
 
-// ─── PHASE 1: Discover users via hashtags ─────────────────────────────────────
+const estimatedUsers = Math.min(hashtagQueue.length, maxHashtags) * maxPagesPerHashtag * 12;
+
+log.info(`\n🏃 Instagram Email Scraper v13`);
+log.info(`   Seed hashtags      : ${hashtagQueue.length}`);
+log.info(`   Max total hashtags : ${maxHashtags} (seeds + auto-discovered)`);
+log.info(`   Pages per hashtag  : ${maxPagesPerHashtag} (~${maxPagesPerHashtag * 12} users/tag)`);
+log.info(`   Min followers      : ${minFollowers.toLocaleString()}`);
+log.info(`   Max results        : ${maxResults}`);
+log.info(`   Est. users found   : ~${estimatedUsers.toLocaleString()}`);
+
+// ─── PHASE 1: Discover users (deep pagination + related hashtag discovery) ────
 
 log.info(`\n📡 PHASE 1: Discovering users...`);
 const profilesToCheck = [];
 
-for (const rawTag of hashtags) {
-    if (profilesToCheck.length >= maxResults * 5) break;
-    const tag = rawTag.replace(/^#/, '').toLowerCase().trim();
-    if (!tag) continue;
+while (hashtagQueue.length > 0 && seenHashtags.size < maxHashtags) {
+    if (profilesToCheck.length >= maxResults * 10) break;
 
-    log.info(`\n📌 #${tag}`);
-    let maxId   = '';
-    let pageNum = 0;
+    const tag = hashtagQueue.shift();
+    if (!tag || seenHashtags.has(tag)) continue;
+    seenHashtags.add(tag);
 
-    while (pageNum < maxPagesPerHashtag) {
+    const tagNum = seenHashtags.size;
+    log.info(`\n📌 [${tagNum}/${maxHashtags}] #${tag}`);
+
+    // ── Step A: Discover related hashtags FIRST (expands queue before we paginate) ──
+    if (seenHashtags.size < maxHashtags) {
+        const related = await discoverRelatedHashtags(tag);
+        let addedCount = 0;
+        for (const relTag of related) {
+            if (!seenHashtags.has(relTag) && !hashtagQueue.includes(relTag)) {
+                hashtagQueue.push(relTag);
+                addedCount++;
+            }
+        }
+        if (addedCount > 0) {
+            log.info(`   🔍 Discovered ${addedCount} related hashtags → queue now ${hashtagQueue.length} tags`);
+        }
+    }
+
+    // ── Step B: Deep paginate this hashtag using mobile feed API ─────────────
+    let pageNum       = 0;
+    let nextMaxId     = '';
+    let moreAvailable = true;
+    let totalThisTag  = 0;
+
+    while (pageNum < maxPagesPerHashtag && moreAvailable) {
         pageNum++;
 
-        let url = `https://www.instagram.com/api/v1/tags/web_info/?tag_name=${encodeURIComponent(tag)}`;
-        if (maxId) url += `&max_id=${encodeURIComponent(maxId)}`;
+        const result = await fetchHashtagPage(tag, nextMaxId);
 
-        const data = await igApiFetch(url);
-
-        // GraphQL fallback
-        if (!data) {
-            let gqlUrl = `https://www.instagram.com/explore/tags/${encodeURIComponent(tag)}/?__a=1&__d=dis`;
-            if (maxId) gqlUrl += `&max_id=${encodeURIComponent(maxId)}`;
-            const gql = await igApiFetch(gqlUrl);
-
-            if (!gql) {
-                log.warning(`#${tag} p${pageNum}: API failed — moving on`);
-                break;
-            }
-
-            const edges = gql?.graphql?.hashtag?.edge_hashtag_to_media?.edges
-                       || gql?.data?.hashtag?.edge_hashtag_to_media?.edges || [];
-            for (const e of edges) {
-                const u = e?.node?.owner?.username;
-                if (u && !seenUsers.has(u)) { seenUsers.add(u); profilesToCheck.push(u); }
-            }
-            maxId = gql?.graphql?.hashtag?.edge_hashtag_to_media?.page_info?.end_cursor || '';
-            if (!maxId) break;
-            await new Promise(r => setTimeout(r, 600));
-            continue;
+        if (!result) {
+            log.warning(`   #${tag} p${pageNum}: API failed — stopping`);
+            break;
         }
 
-        // v1 API success
-        const nextMaxId = data?.data?.recent?.next_max_id || null;
-        let count = 0;
-        for (const key of ['recent', 'top']) {
-            for (const section of (data?.data?.[key]?.sections || [])) {
-                for (const m of [
-                    ...(section?.layout_content?.medias || []),
-                    ...(section?.layout_content?.fill_media || []),
-                ]) {
-                    const u = (m?.media?.user || m?.media?.owner)?.username;
-                    if (u && !seenUsers.has(u)) { seenUsers.add(u); profilesToCheck.push(u); count++; }
-                }
+        let newCount = 0;
+        for (const u of result.usernames) {
+            if (!seenUsers.has(u)) {
+                seenUsers.add(u);
+                profilesToCheck.push(u);
+                newCount++;
+                totalThisTag++;
             }
         }
 
-        log.info(`#${tag} p${pageNum}: +${count} users (total: ${profilesToCheck.length}) | next: ${nextMaxId ? '✅' : '❌'}`);
-        if (!nextMaxId) break;
-        maxId = nextMaxId;
-        await new Promise(r => setTimeout(r, 600));
+        log.info(`   p${pageNum} [${result.source}]: +${newCount} users | tag total: ${totalThisTag} | grand total: ${profilesToCheck.length} | next: ${result.nextMaxId ? '✅' : '❌'}`);
+
+        if (!result.nextMaxId || !result.moreAvailable || newCount === 0) {
+            moreAvailable = false;
+            break;
+        }
+
+        nextMaxId     = result.nextMaxId;
+        moreAvailable = result.moreAvailable;
+
+        // Small delay between pages to avoid rate limiting
+        await new Promise(r => setTimeout(r, 500));
     }
+
+    log.info(`   ✅ #${tag} complete: ${totalThisTag} users over ${pageNum} pages`);
+    await new Promise(r => setTimeout(r, 400));
 }
 
-log.info(`\n👥 Discovered ${profilesToCheck.length} unique users`);
+log.info(`\n👥 Phase 1 complete!`);
+log.info(`   Hashtags processed : ${seenHashtags.size}`);
+log.info(`   Total users found  : ${profilesToCheck.length}`);
 
-// ─── PHASE 2: Fetch profiles ──────────────────────────────────────────────────
+// ─── PHASE 2: Check profiles ──────────────────────────────────────────────────
 
-log.info(`\n📡 PHASE 2: Checking ${profilesToCheck.length} profiles...`);
+log.info(`\n📡 PHASE 2: Checking ${profilesToCheck.length} profiles (min ${minFollowers.toLocaleString()} followers)...`);
 const externalLinks = [];
 
 for (const username of profilesToCheck) {
@@ -302,17 +378,16 @@ for (const username of profilesToCheck) {
         externalLinks.push({ username: record.username, url: extUrl });
     }
 
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 250));
 }
 
-// Close Instagram browser — no longer needed
 await browser.close();
 log.info(`\n✅ Phase 2 done. ${totalSaved} profiles saved.`);
 
-// ─── PHASE 3: Linktree / websites via Playwright ──────────────────────────────
+// ─── PHASE 3: Linktree / websites for extra emails ────────────────────────────
 
 if (externalLinks.length > 0) {
-    log.info(`\n🔗 PHASE 3: Scraping ${externalLinks.length} external links...`);
+    log.info(`\n🔗 PHASE 3: Scraping ${externalLinks.length} external links for emails...`);
 
     const extQueue = await RequestQueue.open('ext');
     for (const { username, url } of externalLinks) {
@@ -327,7 +402,7 @@ if (externalLinks.length > 0) {
     const extCrawler = new PlaywrightCrawler({
         requestQueue: extQueue,
         proxyConfiguration: proxyConfig,
-        maxConcurrency: 50,
+        maxConcurrency: 5,
         requestHandlerTimeoutSecs: 45,
         navigationTimeoutSecs: 25,
         maxRequestRetries: 1,
@@ -381,9 +456,7 @@ if (externalLinks.length > 0) {
                 log.warning(`@${uname}: ${e.message}`);
             }
         },
-        failedRequestHandler({ request }) {
-            log.warning(`Skipped: ${request.url}`);
-        },
+        failedRequestHandler({ request }) { log.warning(`Skipped: ${request.url}`); },
     });
 
     await extCrawler.run();
@@ -402,15 +475,17 @@ const withEmail = final.filter(i => i.hasEmail).length;
 const hitRate   = final.length ? Math.round(withEmail / final.length * 100) : 0;
 
 log.info(`\n🎉 All done!`);
-log.info(`   Profiles saved : ${final.length}`);
-log.info(`   With email     : ${withEmail} (${hitRate}%)`);
-log.info(`   Users scanned  : ${seenUsers.size}`);
+log.info(`   Hashtags processed : ${seenHashtags.size}`);
+log.info(`   Users scanned      : ${seenUsers.size}`);
+log.info(`   Profiles saved     : ${final.length}`);
+log.info(`   With email         : ${withEmail} (${hitRate}%)`);
 
 await Actor.setValue('SUMMARY', {
-    profilesSaved: final.length,
+    hashtagsProcessed: seenHashtags.size,
+    profilesSaved:     final.length,
     withEmail,
-    emailHitRate:  `${hitRate}%`,
-    scanned:       seenUsers.size,
+    emailHitRate:      `${hitRate}%`,
+    scanned:           seenUsers.size,
 });
 
 await Actor.exit();
