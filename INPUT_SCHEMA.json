@@ -1,63 +1,63 @@
 {
     "title": "Instagram Running Influencer Email Extractor",
-    "description": "Scrapes Instagram running/marathon accounts and extracts emails from: Instagram Email button, bio text, Linktree, and personal websites.",
+    "description": "Deep pagination via Instagram mobile feed API + auto-discovers related hashtags. Start with 5 seeds → expands to 50 related hashtags → paginates each deeply.",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
         "hashtags": {
-            "title": "Hashtags to search",
+            "title": "Seed hashtags (start with 5)",
             "type": "array",
-            "description": "Instagram hashtags to scrape (without #).",
+            "description": "Starting hashtags. The actor auto-discovers related ones up to maxHashtags total.",
             "editor": "stringList",
-            "default": [
-                "running","marathon","halfmarathon","runningcommunity",
-                "runnersofinstagram","ultramarathon","trailrunning",
-                "runnerlife","runningmotivation","roadrunning",
-                "marathontraining","runningcoach","runningwomen",
-                "instarunners","runner","runhappy","marathonrunner",
-                "halfmarathontraining","runningdaily","trailrunner",
-                "runninglifestyle","morningrun","runningislife",
-                "marathoners","runningworld","bostonmarathon",
-                "runforlife","runningmen","hyrox","runcoach"
-            ]
+            "default": ["running","marathon","halfmarathon","runnersofinstagram","runningcoach"],
+            "prefill": ["running","marathon","halfmarathon","runnersofinstagram","runningcoach"]
+        },
+        "maxHashtags": {
+            "title": "Max total hashtags (seeds + auto-discovered)",
+            "type": "integer",
+            "description": "5 seeds typically expand to 50+ related tags. Set to 50 for a balanced run.",
+            "minimum": 5,
+            "maximum": 500,
+            "default": 50,
+            "prefill": 50
+        },
+        "maxPagesPerHashtag": {
+            "title": "Pages per hashtag",
+            "type": "integer",
+            "description": "Mobile API returns ~12 users per page. 50 pages = ~600 users per hashtag. 100 pages = ~1200 users.",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 50,
+            "prefill": 50
         },
         "minFollowers": {
             "title": "Minimum follower count",
             "type": "integer",
             "description": "Only save profiles with at least this many followers.",
-            "minimum": 4000,
+            "minimum": 100,
             "default": 5000,
             "prefill": 5000
         },
         "maxResults": {
-            "title": "Maximum results",
+            "title": "Maximum results to save",
             "type": "integer",
-            "description": "Stop after saving this many qualifying profiles.",
+            "description": "Stop saving after this many qualifying profiles.",
             "minimum": 1,
             "maximum": 100000,
             "default": 500,
             "prefill": 500
         },
-        "maxPagesPerHashtag": {
-            "title": "Pages per hashtag",
-            "type": "integer",
-            "description": "How many pages to fetch per hashtag. Each page = ~20 users. Set to 50 for ~1000 users per hashtag.",
-            "minimum": 1,
-            "maximum": 100,
-            "default": 10,
-            "prefill": 10
-        },
         "sessionId": {
             "title": "Instagram Session ID (sessionid cookie)",
             "type": "string",
-            "description": "Your Instagram sessionid cookie. Required for best results.",
+            "description": "Get from Chrome Console: document.cookie.split(';').find(c=>c.trim().startsWith('sessionid')).split('=')[1]",
             "editor": "textfield",
             "isSecret": true
         },
         "csrfToken": {
-            "title": "Instagram CSRF Token (optional)",
+            "title": "Instagram CSRF Token (csrftoken cookie)",
             "type": "string",
-            "description": "Your Instagram csrftoken cookie value. Optional.",
+            "description": "Get from Chrome Console: document.cookie.split(';').find(c=>c.trim().startsWith('csrftoken')).split('=')[1]",
             "editor": "textfield",
             "isSecret": true
         },
