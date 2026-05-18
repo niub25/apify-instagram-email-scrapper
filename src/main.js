@@ -1,6 +1,6 @@
 import { Actor } from 'apify';
 import { PlaywrightCrawler, RequestQueue, Dataset, log } from 'crawlee';
-import { gotScraping } from 'got-scraping';
+import { chromium } from 'playwright';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -36,125 +36,6 @@ function isLinkAggregator(url) {
     ].some(a => url.includes(a));
 }
 
-const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
-
-// ─── Build full cookie set ────────────────────────────────────────────────────
-// Fetches instagram.com homepage to collect all required cookies,
-// then merges with the user-provided sessionId and csrfToken.
-
-async function buildFullCookies(sessionId, inputCsrfToken, proxyUrl) {
-    log.info('🍪 Fetching Instagram homepage to collect full cookie set...');
-    try {
-        const res = await gotScraping.get('https://www.instagram.com/', {
-            proxyUrl,
-            followRedirect: true,
-            headers: {
-                'User-Agent': MOBILE_UA,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Cookie': `sessionid=${sessionId}${inputCsrfToken ? `; csrftoken=${inputCsrfToken}` : ''}`,
-            },
-            timeout: { request: 20000 },
-            throwHttpErrors: false,
-        });
-
-        // Parse all Set-Cookie headers from response
-        const cookieMap = { sessionid: sessionId };
-
-        // If user provided csrfToken, use it directly (most reliable)
-        if (inputCsrfToken) cookieMap['csrftoken'] = inputCsrfToken;
-
-        const setCookies = res.headers['set-cookie'] ?? [];
-        for (const raw of setCookies) {
-            const [nameVal] = raw.split(';');
-            const eqIdx = nameVal.indexOf('=');
-            if (eqIdx < 0) continue;
-            const name = nameVal.slice(0, eqIdx).trim();
-            const val  = nameVal.slice(eqIdx + 1).trim();
-            // Don't overwrite user-provided csrfToken with fetched one
-            if (name && val && !(name === 'csrftoken' && inputCsrfToken)) {
-                cookieMap[name] = val;
-            }
-        }
-
-        const cookieStr  = Object.entries(cookieMap).map(([k, v]) => `${k}=${v}`).join('; ');
-        const csrfToken  = cookieMap['csrftoken'] ?? '';
-
-        log.info(`🍪 Cookies collected: ${Object.keys(cookieMap).join(', ')}`);
-        log.info(`🍪 CSRF token: ${csrfToken ? '✅' : '❌ missing — provide it in Input'}`);
-
-        return { cookieStr, csrfToken };
-    } catch (e) {
-        log.warning(`Cookie collection failed: ${e.message}`);
-        // Fall back to just sessionid + user-provided csrfToken
-        const cookieStr = `sessionid=${sessionId}${inputCsrfToken ? `; csrftoken=${inputCsrfToken}` : ''}`;
-        return { cookieStr, csrfToken: inputCsrfToken ?? '' };
-    }
-}
-
-// ─── Instagram API fetch ──────────────────────────────────────────────────────
-
-async function igFetch(url, cookieStr, csrfToken, proxyUrl) {
-    try {
-        const res = await gotScraping.get(url, {
-            proxyUrl,
-            followRedirect: true,
-            maxRedirects: 5,
-            headers: {
-                'User-Agent': MOBILE_UA,
-                'X-IG-App-ID': '936619743392459',
-                'X-IG-Capabilities': '3brTvw==',
-                'X-IG-Connection-Type': 'WiFi',
-                'X-ASBD-ID': '129477',
-                'X-CSRFToken': csrfToken,
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.instagram.com/',
-                'Origin': 'https://www.instagram.com',
-                'Cookie': cookieStr,
-            },
-            timeout: { request: 25000 },
-            throwHttpErrors: false,
-        });
-
-        const status = res.statusCode;
-
-        if (status === 429) {
-            log.warning('Rate limited (429) — waiting 15s...');
-            await new Promise(r => setTimeout(r, 15000));
-            return null;
-        }
-
-        if (status === 401 || status === 403) {
-            log.warning(`Auth error (${status}) — session may be invalid`);
-            return null;
-        }
-
-        if (status !== 200) {
-            log.warning(`Status ${status} for ${url}`);
-            return null;
-        }
-
-        const body = res.body?.trim() ?? '';
-
-        // Check for HTML login page instead of JSON
-        if (body.startsWith('<!DOCTYPE') || body.startsWith('<html')) {
-            log.warning(`Got HTML instead of JSON — session expired or blocked`);
-            return null;
-        }
-
-        if (!body.startsWith('{') && !body.startsWith('[')) {
-            log.warning(`Unexpected response: ${body.substring(0, 100)}`);
-            return null;
-        }
-
-        return JSON.parse(body);
-    } catch (e) {
-        log.warning(`igFetch error: ${e.message}`);
-        return null;
-    }
-}
-
 // ─── Actor ────────────────────────────────────────────────────────────────────
 
 await Actor.init();
@@ -176,43 +57,107 @@ const {
     maxResults         = 500,
     maxPagesPerHashtag = 10,
     sessionId,
-    csrfToken: inputCsrfToken,      // ← correctly read from input
+    csrfToken,
     proxyConfiguration,
 } = input;
 
 if (!sessionId) {
-    log.error('sessionId is required! Add your Instagram sessionid cookie in Input.');
+    log.error('sessionId is required!');
     await Actor.exit();
 }
 
 const proxyConfig = await Actor.createProxyConfiguration(
     proxyConfiguration ?? { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] }
 );
-const proxyUrl = await proxyConfig.newUrl('ig_main');
 
-// ─── Collect full cookie set ──────────────────────────────────────────────────
+// ─── Launch a single persistent browser for all Instagram API calls ───────────
+// This is the most reliable approach — Instagram accepts real browser requests
+// We navigate to instagram.com ONCE, inject session cookies, then make all
+// API calls via fetch() inside the page (which uses the session cookies automatically)
 
-const { cookieStr, csrfToken } = await buildFullCookies(sessionId, inputCsrfToken, proxyUrl);
+log.info('🌐 Launching browser for Instagram API calls...');
 
-// ─── Quick API test ───────────────────────────────────────────────────────────
+const proxyUrl  = await proxyConfig.newUrl('ig_browser');
+const proxyHost = proxyUrl ? new URL(proxyUrl) : null;
 
-log.info('🔍 Testing Instagram API...');
-const testData = await igFetch(
-    'https://www.instagram.com/api/v1/tags/web_info/?tag_name=running',
-    cookieStr, csrfToken, proxyUrl
-);
+const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-blink-features=AutomationControlled'],
+    proxy: proxyHost ? {
+        server:   `${proxyHost.protocol}//${proxyHost.host}`,
+        username: proxyHost.username ? decodeURIComponent(proxyHost.username) : undefined,
+        password: proxyHost.password ? decodeURIComponent(proxyHost.password) : undefined,
+    } : undefined,
+});
+
+const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+    viewport: { width: 390, height: 844 },
+});
+
+// Inject session cookies into browser context
+await context.addCookies([
+    { name: 'sessionid', value: sessionId,  domain: '.instagram.com', path: '/', httpOnly: true,  secure: true },
+    ...(csrfToken ? [{ name: 'csrftoken', value: csrfToken, domain: '.instagram.com', path: '/', secure: true }] : []),
+]);
+
+// Open one persistent page and navigate to Instagram homepage
+const igPage = await context.newPage();
+
+log.info('📱 Navigating to Instagram homepage...');
+await igPage.goto('https://www.instagram.com/', {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+}).catch(e => log.warning(`Homepage nav warning: ${e.message}`));
+
+// ─── Instagram API caller (runs inside real browser — Instagram can't block it) ─
+
+async function igApiFetch(apiUrl) {
+    try {
+        const result = await igPage.evaluate(async (url) => {
+            try {
+                const r = await fetch(url, {
+                    headers: {
+                        'X-IG-App-ID': '936619743392459',
+                        'X-ASBD-ID': '129477',
+                        'Accept': '*/*',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                    credentials: 'include',
+                });
+                if (!r.ok) return { error: r.status };
+                const data = await r.json();
+                return { data };
+            } catch (e) {
+                return { error: e.message };
+            }
+        }, apiUrl);
+
+        if (result?.error) {
+            log.warning(`API error ${result.error} for ${apiUrl}`);
+            return null;
+        }
+        return result?.data ?? null;
+    } catch (e) {
+        log.warning(`igApiFetch exception: ${e.message}`);
+        return null;
+    }
+}
+
+// ─── Test API connection ──────────────────────────────────────────────────────
+
+log.info('🔍 Testing Instagram API connection...');
+const testData = await igApiFetch('https://www.instagram.com/api/v1/tags/web_info/?tag_name=running');
 
 if (!testData) {
-    log.error('❌ API test FAILED. Please:');
-    log.error('   1. Get a FRESH sessionid — open Chrome Console on instagram.com and run:');
-    log.error('      document.cookie.split(";").find(c=>c.trim().startsWith("sessionid")).split("=")[1]');
-    log.error('   2. Get a FRESH csrftoken — run:');
-    log.error('      document.cookie.split(";").find(c=>c.trim().startsWith("csrftoken")).split("=")[1]');
-    log.error('   3. Paste both values into the Input fields and run again.');
+    log.error('❌ Instagram API test FAILED.');
+    log.error('   → Get a fresh sessionid and csrftoken from Chrome DevTools:');
+    log.error('     sessionid:  document.cookie.split(";").find(c=>c.trim().startsWith("sessionid")).split("=")[1]');
+    log.error('     csrftoken:  document.cookie.split(";").find(c=>c.trim().startsWith("csrftoken")).split("=")[1]');
+    await browser.close();
     await Actor.exit();
 } else {
-    const sampleCount = testData?.data?.recent?.sections?.length ?? 0;
-    log.info(`✅ API working! Got ${sampleCount} sections for #running`);
+    log.info(`✅ Instagram API working!`);
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -221,7 +166,7 @@ const seenUsers  = new Set();
 const savedData  = new Map();
 let   totalSaved = 0;
 
-log.info(`\n🏃 Instagram Email Scraper v9 (fixed)`);
+log.info(`\n🏃 Instagram Email Scraper v10`);
 log.info(`   Hashtags      : ${hashtags.length}`);
 log.info(`   Pages/hashtag : ${maxPagesPerHashtag}`);
 log.info(`   Min followers : ${minFollowers.toLocaleString()}`);
@@ -243,19 +188,20 @@ for (const rawTag of hashtags) {
 
     while (pageNum < maxPagesPerHashtag) {
         pageNum++;
+
         let url = `https://www.instagram.com/api/v1/tags/web_info/?tag_name=${encodeURIComponent(tag)}`;
         if (maxId) url += `&max_id=${encodeURIComponent(maxId)}`;
 
-        const data = await igFetch(url, cookieStr, csrfToken, proxyUrl);
+        const data = await igApiFetch(url);
 
-        // GraphQL fallback if v1 fails
+        // GraphQL fallback
         if (!data) {
             let gqlUrl = `https://www.instagram.com/explore/tags/${encodeURIComponent(tag)}/?__a=1&__d=dis`;
             if (maxId) gqlUrl += `&max_id=${encodeURIComponent(maxId)}`;
-            const gql = await igFetch(gqlUrl, cookieStr, csrfToken, proxyUrl);
+            const gql = await igApiFetch(gqlUrl);
 
             if (!gql) {
-                log.warning(`#${tag} p${pageNum}: both APIs failed — moving on`);
+                log.warning(`#${tag} p${pageNum}: API failed — moving on`);
                 break;
             }
 
@@ -267,7 +213,7 @@ for (const rawTag of hashtags) {
             }
             maxId = gql?.graphql?.hashtag?.edge_hashtag_to_media?.page_info?.end_cursor || '';
             if (!maxId) break;
-            await new Promise(r => setTimeout(r, 700));
+            await new Promise(r => setTimeout(r, 600));
             continue;
         }
 
@@ -289,7 +235,7 @@ for (const rawTag of hashtags) {
         log.info(`#${tag} p${pageNum}: +${count} users (total: ${profilesToCheck.length}) | next: ${nextMaxId ? '✅' : '❌'}`);
         if (!nextMaxId) break;
         maxId = nextMaxId;
-        await new Promise(r => setTimeout(r, 700));
+        await new Promise(r => setTimeout(r, 600));
     }
 }
 
@@ -303,9 +249,8 @@ const externalLinks = [];
 for (const username of profilesToCheck) {
     if (totalSaved >= maxResults) break;
 
-    const data = await igFetch(
-        `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
-        cookieStr, csrfToken, proxyUrl
+    const data = await igApiFetch(
+        `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`
     );
     const user = data?.data?.user;
     if (!user) { log.debug(`@${username}: no data`); continue; }
@@ -360,12 +305,14 @@ for (const username of profilesToCheck) {
     await new Promise(r => setTimeout(r, 300));
 }
 
+// Close Instagram browser — no longer needed
+await browser.close();
 log.info(`\n✅ Phase 2 done. ${totalSaved} profiles saved.`);
 
-// ─── PHASE 3: Linktree / websites ────────────────────────────────────────────
+// ─── PHASE 3: Linktree / websites via Playwright ──────────────────────────────
 
 if (externalLinks.length > 0) {
-    log.info(`\n🔗 PHASE 3: Scraping ${externalLinks.length} external links for emails...`);
+    log.info(`\n🔗 PHASE 3: Scraping ${externalLinks.length} external links...`);
 
     const extQueue = await RequestQueue.open('ext');
     for (const { username, url } of externalLinks) {
@@ -415,7 +362,6 @@ if (externalLinks.length > 0) {
                         }
                     }
                 }
-                // Follow outbound links from Linktree to personal sites
                 if (request.label === 'LINKTREE') {
                     const outbound = await page.$$eval('a[href^="http"]', els =>
                         els.map(a => a.href).filter(h =>
