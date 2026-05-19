@@ -56,8 +56,8 @@ const input = await Actor.getInput();
 const {
     hashtags: seedHashtags = ['running', 'marathon', 'halfmarathon', 'runnersofinstagram', 'runningcoach'],
     maxResults = 10000,
-    maxHashtags = 500,
-    maxPagesPerHashtag = 1,
+    maxHashtags = 700,
+    maxPagesPerHashtag = 500,
     relatedSearchCount = 50,
     sessionId,
     csrfToken,
