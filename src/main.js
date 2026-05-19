@@ -51,6 +51,8 @@ const {
     maxResults         = 10000,
     maxHashtags        = 500,
     maxPagesPerHashtag = 50,
+    useManagedHashtagScraper = true,
+    hashtagScraperActorId = 'scrapesmith/instagram-hashtag-scraper',
     sessionId,
     csrfToken,
     proxyConfiguration,
@@ -304,6 +306,34 @@ async function fetchHashtagPage(tag, maxId, rankToken = randomUUID(), pageNum = 
     return null;
 }
 
+async function fetchHashtagUsersWithManagedActor(tag, limit) {
+    const run = await Actor.call(hashtagScraperActorId, {
+        hashtags: [tag],
+        maxResultsPerHashtag: limit,
+    });
+
+    const dataset = await Dataset.open(run.defaultDatasetId);
+    const usernames = new Set();
+    let offset = 0;
+
+    while (true) {
+        const { items } = await dataset.getData({ offset, limit: 1000 });
+        if (items.length === 0) break;
+
+        for (const item of items) {
+            const username = item.ownerUsername
+                ?? item.owner?.username
+                ?? item.username
+                ?? item.user?.username;
+            if (username) usernames.add(username);
+        }
+
+        offset += items.length;
+    }
+
+    return [...usernames];
+}
+
 // ─── Discover related hashtags ────────────────────────────────────────────────
 
 async function discoverRelatedHashtags(tag) {
@@ -382,6 +412,29 @@ while (hashtagQueue.length > 0 && seenHashtags.size < maxHashtags) {
             }
         }
         if (addedCount > 0) log.info(`   🔍 +${addedCount} related tags → queue: ${hashtagQueue.length}`);
+    }
+
+    if (useManagedHashtagScraper) {
+        const managedLimit = Math.min(maxPagesPerHashtag * 30, Math.max(100, maxResults * 2));
+        log.info(`   🔁 Using ${hashtagScraperActorId} for up to ${managedLimit} hashtag posts`);
+
+        const usernames = await fetchHashtagUsersWithManagedActor(tag, managedLimit).catch(e => {
+            log.warning(`   Managed hashtag scraper failed for #${tag}: ${e.message}`);
+            return [];
+        });
+
+        let newCount = 0;
+        for (const u of usernames) {
+            if (!seenUsers.has(u)) {
+                seenUsers.add(u);
+                profilesToCheck.push(u);
+                newCount++;
+            }
+        }
+
+        log.info(`   ✅ #${tag}: +${newCount} users from ${usernames.length} managed hashtag results`);
+        await sleep(400);
+        continue;
     }
 
     // Deep paginate this hashtag
