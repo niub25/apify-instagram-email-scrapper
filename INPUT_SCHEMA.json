@@ -1,66 +1,52 @@
 {
-    "title": "Instagram Running Influencer Email Extractor",
-    "description": "Discovers Instagram usernames from hashtags using a managed hashtag scraper, then checks profiles and linked websites for emails.",
+    "title": "Instagram Hashtag Username Discovery",
+    "description": "Discovers Instagram profile usernames from seed hashtags and auto-discovered related hashtags. Outputs username and profileUrl only.",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
         "hashtags": {
-            "title": "Seed hashtags (start with 5)",
+            "title": "Seed hashtags",
             "type": "array",
-            "description": "Starting hashtags. The actor auto-discovers related ones up to maxHashtags total.",
+            "description": "Starting hashtags. Do not include the # symbol. The actor expands these into related/search hashtags.",
             "editor": "stringList",
-            "default": ["running","marathon","halfmarathon","runnersofinstagram","runningcoach"],
-            "prefill": ["running","marathon","halfmarathon","runnersofinstagram","runningcoach"]
+            "default": ["running", "marathon", "halfmarathon", "runnersofinstagram", "runningcoach"],
+            "prefill": ["running", "marathon", "halfmarathon", "runnersofinstagram", "runningcoach"]
         },
         "maxHashtags": {
-            "title": "Max total hashtags (seeds + auto-discovered)",
+            "title": "Max total hashtags",
             "type": "integer",
-            "description": "5 seeds typically expand to 50+ related tags. Set to 50 for a balanced run.",
+            "description": "Maximum number of hashtags to process, including seed and related hashtags.",
             "minimum": 5,
+            "maximum": 5000,
+            "default": 500,
+            "prefill": 500
+        },
+        "maxPagesPerHashtag": {
+            "title": "Pages per hashtag",
+            "type": "integer",
+            "description": "How many result pages to try per hashtag. Use 1 if you prefer broad discovery through many related hashtags.",
+            "minimum": 1,
             "maximum": 500,
+            "default": 1,
+            "prefill": 1
+        },
+        "relatedSearchCount": {
+            "title": "Related search count",
+            "type": "integer",
+            "description": "How many related hashtag search results to request per hashtag.",
+            "minimum": 5,
+            "maximum": 100,
             "default": 50,
             "prefill": 50
         },
-        "maxPagesPerHashtag": {
-            "title": "Discovery depth per hashtag",
-            "type": "integer",
-            "description": "When managed hashtag scraping is enabled, this is multiplied by 30. Use 67 for ~2,000 hashtag posts per hashtag, or 100 for ~3,000.",
-            "minimum": 1,
-            "maximum": 500,
-            "default": 67,
-            "prefill": 67
-        },
-        "useManagedHashtagScraper": {
-            "title": "Use managed hashtag scraper",
-            "type": "boolean",
-            "description": "Uses a separate Apify hashtag scraper actor to discover post owner usernames instead of relying on Instagram's unstable private pagination endpoints.",
-            "default": true,
-            "prefill": true
-        },
-        "hashtagScraperActorId": {
-            "title": "Managed hashtag scraper actor ID",
-            "type": "string",
-            "description": "Actor used for hashtag discovery. It must return ownerUsername or an equivalent username field.",
-            "default": "scrapesmith/instagram-hashtag-scraper",
-            "prefill": "scrapesmith/instagram-hashtag-scraper",
-            "editor": "textfield"
-        },
-        "minFollowers": {
-            "title": "Minimum follower count",
-            "type": "integer",
-            "description": "Only save profiles with at least this many followers.",
-            "minimum": 5000,
-            "default": 5000,
-            "prefill": 5000
-        },
         "maxResults": {
-            "title": "Maximum results to save",
+            "title": "Maximum usernames to save",
             "type": "integer",
-            "description": "Stop saving after this many qualifying profiles.",
+            "description": "Actor stops after saving this many unique Instagram usernames.",
             "minimum": 1,
-            "maximum": 100000,
-            "default": 500,
-            "prefill": 500
+            "maximum": 1000000,
+            "default": 10000,
+            "prefill": 10000
         },
         "sessionId": {
             "title": "Instagram Session ID (sessionid cookie)",
