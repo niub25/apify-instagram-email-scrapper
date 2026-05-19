@@ -181,26 +181,35 @@ function hasMorePages(data, nextMaxId) {
 }
 
 async function fetchHashtagPage(tag, maxId, rankToken = randomUUID(), pageNum = 1) {
-    // Mobile feed API. A stable, non-empty rank_token is required for hashtag pagination.
-    let url = `https://i.instagram.com/api/v1/feed/tag/${encodeURIComponent(tag)}/?rank_token=${encodeURIComponent(rankToken)}&ranked_content=true`;
-    if (maxId) url += `&max_id=${encodeURIComponent(maxId)}`;
+    const encodedTag = encodeURIComponent(tag);
+    const encodedRankToken = encodeURIComponent(rankToken);
+    const encodedMaxId = maxId ? `&max_id=${encodeURIComponent(maxId)}` : '';
 
-    const mobileData = await igApiFetch(url);
-    if (mobileData) {
-        const nextMaxId = getNextMaxId(mobileData);
-        return {
-            usernames: [...new Set([
-                ...collectMediaUsernames(mobileData?.items),
-                ...collectMediaUsernames(mobileData?.ranked_items),
-            ])],
-            nextMaxId,
-            moreAvailable: hasMorePages(mobileData, nextMaxId),
-            source: 'mobile',
-        };
+    // Try both mobile tag-feed URL shapes. Instagram accepts different variants
+    // depending on account/session state, but both need a stable rank_token.
+    const mobileUrls = [
+        `https://i.instagram.com/api/v1/feed/tag/${encodedTag}/?rank_token=${encodedRankToken}&ranked_content=true${encodedMaxId}`,
+        `https://i.instagram.com/api/v1/feed/tag/?tag_name=${encodedTag}&rank_token=${encodedRankToken}&ranked_content=true${encodedMaxId}`,
+    ];
+
+    for (const mobileUrl of mobileUrls) {
+        const mobileData = await igApiFetch(mobileUrl);
+        if (mobileData) {
+            const nextMaxId = getNextMaxId(mobileData);
+            return {
+                usernames: [...new Set([
+                    ...collectMediaUsernames(mobileData?.items),
+                    ...collectMediaUsernames(mobileData?.ranked_items),
+                ])],
+                nextMaxId,
+                moreAvailable: hasMorePages(mobileData, nextMaxId),
+                source: 'mobile',
+            };
+        }
     }
 
     // Web sections fallback. Unlike web_info, this is a paginated hashtag feed.
-    let webUrl = `https://www.instagram.com/api/v1/tags/${encodeURIComponent(tag)}/sections/?tab=recent&page=${pageNum}`;
+    let webUrl = `https://www.instagram.com/api/v1/tags/${encodedTag}/sections/?tab=recent&page=${pageNum}`;
     if (maxId) webUrl += `&max_id=${encodeURIComponent(maxId)}`;
 
     const webData = await igApiFetch(webUrl);
@@ -220,6 +229,32 @@ async function fetchHashtagPage(tag, maxId, rankToken = randomUUID(), pageNum = 
             moreAvailable: hasMorePages(webData, nextMaxId),
             source: 'sections',
         };
+    }
+
+    // Last-resort first-page fallback so the actor can still verify auth and
+    // collect something if Instagram rejects both paginated feed endpoints.
+    if (!maxId) {
+        const webInfoData = await igApiFetch(
+            `https://www.instagram.com/api/v1/tags/web_info/?tag_name=${encodedTag}`
+        );
+        if (webInfoData) {
+            const mediaItems = [];
+            for (const key of ['recent', 'top']) {
+                for (const section of (webInfoData?.data?.[key]?.sections ?? [])) {
+                    mediaItems.push(
+                        ...(section?.layout_content?.medias ?? []),
+                        ...(section?.layout_content?.fill_media ?? [])
+                    );
+                }
+            }
+            const nextMaxId = webInfoData?.data?.recent?.next_max_id ?? null;
+            return {
+                usernames: [...new Set(collectMediaUsernames(mediaItems))],
+                nextMaxId,
+                moreAvailable: false,
+                source: 'web_info',
+            };
+        }
     }
 
     return null;
