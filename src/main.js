@@ -2,6 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, RequestQueue, Dataset, log } from 'crawlee';
 import { chromium } from 'playwright';
 import { randomUUID } from 'crypto';
+import { gotScraping } from 'got-scraping';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,7 @@ const proxyConfig = await Actor.createProxyConfiguration(
 
 log.info('🌐 Launching browser...');
 const proxyUrl  = await proxyConfig.newUrl('ig_browser');
+const apiProxyUrl = await proxyConfig.newUrl('ig_api');
 const proxyHost = proxyUrl ? new URL(proxyUrl) : null;
 
 const browser = await chromium.launch({
@@ -147,6 +149,48 @@ async function igApiFetch(apiUrl, retryCount = 0) {
     }
 }
 
+async function mobileApiFetch(apiUrl, retryCount = 0) {
+    try {
+        const response = await gotScraping({
+            url: apiUrl,
+            proxyUrl: apiProxyUrl,
+            responseType: 'json',
+            timeout: { request: 30000 },
+            throwHttpErrors: false,
+            headers: {
+                'User-Agent': 'Instagram 302.0.0.23.111 Android (30/11; 420dpi; 1080x1920; samsung; SM-G973F; beyond1; exynos9820; en_US; 504085143)',
+                'X-IG-App-ID': '567067343352427',
+                'X-IG-Capabilities': '3brTvw==',
+                'X-IG-Connection-Type': 'WIFI',
+                'Accept-Language': 'en-US',
+                'Cookie': [
+                    `sessionid=${sessionId}`,
+                    csrfToken ? `csrftoken=${csrfToken}` : '',
+                ].filter(Boolean).join('; '),
+            },
+        });
+
+        if (response.statusCode === 429) {
+            const waitMs = Math.min(30000 * Math.pow(2, retryCount), 300000);
+            log.warning(`⏳ Mobile API rate limited (429) — waiting ${waitMs/1000}s before retry ${retryCount + 1}/5...`);
+            await sleep(waitMs);
+            if (retryCount < 5) return mobileApiFetch(apiUrl, retryCount + 1);
+            return null;
+        }
+
+        if (response.statusCode === 401 || response.statusCode === 403) {
+            log.warning(`🔒 Mobile API auth error (${response.statusCode})`);
+            return null;
+        }
+
+        if (response.statusCode < 200 || response.statusCode >= 300) return null;
+        return response.body;
+    } catch (e) {
+        log.warning(`mobileApiFetch error: ${e.message}`);
+        return null;
+    }
+}
+
 // ─── Fetch hashtag page (mobile first, web fallback) ─────────────────────────
 
 function collectMediaUsernames(items = []) {
@@ -193,7 +237,7 @@ async function fetchHashtagPage(tag, maxId, rankToken = randomUUID(), pageNum = 
     ];
 
     for (const mobileUrl of mobileUrls) {
-        const mobileData = await igApiFetch(mobileUrl);
+        const mobileData = await mobileApiFetch(mobileUrl);
         if (mobileData) {
             const nextMaxId = getNextMaxId(mobileData);
             return {
