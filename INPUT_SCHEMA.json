@@ -1,6 +1,6 @@
 {
     "title": "Instagram Running Influencer Email Extractor",
-    "description": "Deep pagination via Instagram mobile feed API + auto-discovers related hashtags. Start with 5 seeds → expands to 50 related hashtags → paginates each deeply.",
+    "description": "Discovers Instagram usernames from hashtags using a managed hashtag scraper, then checks profiles and linked websites for emails.",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
@@ -22,19 +22,34 @@
             "prefill": 50
         },
         "maxPagesPerHashtag": {
-            "title": "Pages per hashtag",
+            "title": "Discovery depth per hashtag",
             "type": "integer",
-            "description": "Mobile API returns ~12 users per page. 50 pages = ~600 users per hashtag. 100 pages = ~1200 users.",
+            "description": "When managed hashtag scraping is enabled, this is multiplied by 30. Use 67 for ~2,000 hashtag posts per hashtag, or 100 for ~3,000.",
             "minimum": 1,
             "maximum": 500,
-            "default": 50,
-            "prefill": 50
+            "default": 67,
+            "prefill": 67
+        },
+        "useManagedHashtagScraper": {
+            "title": "Use managed hashtag scraper",
+            "type": "boolean",
+            "description": "Uses a separate Apify hashtag scraper actor to discover post owner usernames instead of relying on Instagram's unstable private pagination endpoints.",
+            "default": true,
+            "prefill": true
+        },
+        "hashtagScraperActorId": {
+            "title": "Managed hashtag scraper actor ID",
+            "type": "string",
+            "description": "Actor used for hashtag discovery. It must return ownerUsername or an equivalent username field.",
+            "default": "scrapesmith/instagram-hashtag-scraper",
+            "prefill": "scrapesmith/instagram-hashtag-scraper",
+            "editor": "textfield"
         },
         "minFollowers": {
             "title": "Minimum follower count",
             "type": "integer",
             "description": "Only save profiles with at least this many followers.",
-            "minimum": 100,
+            "minimum": 5000,
             "default": 5000,
             "prefill": 5000
         },
