@@ -58,20 +58,11 @@
     },
     "proxyConfiguration": {
       "title": "Proxy configuration",
-      "type": "object",
-      "editor": "proxy",
-      "default": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": [
-          "RESIDENTIAL"
-        ]
-      },
-      "prefill": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": [
-          "RESIDENTIAL"
-        ]
-      }
+    "type": "object",
+    "description": "Residential proxies are strongly recommended for Instagram scraping.",
+    "editor": "proxy",
+    "default": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"] },
+    "prefill": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"] }
     }
   },
   "required": []
