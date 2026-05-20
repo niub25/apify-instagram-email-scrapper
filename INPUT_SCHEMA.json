@@ -1,75 +1,78 @@
 {
-    "title": "Instagram Hashtag Username Discovery",
-    "description": "Discovers Instagram profile usernames from seed hashtags and auto-discovered related hashtags. Outputs username and profileUrl only.",
-    "type": "object",
-    "schemaVersion": 1,
-    "properties": {
-        "hashtags": {
-            "title": "Seed hashtags",
-            "type": "array",
-            "description": "Starting hashtags. Do not include the # symbol. The actor expands these into related/search hashtags.",
-            "editor": "stringList",
-            "default": ["running", "marathon", "halfmarathon", "runnersofinstagram", "runningcoach"],
-            "prefill": ["running", "marathon", "halfmarathon", "runnersofinstagram", "runningcoach"]
-        },
-        "maxHashtags": {
-            "title": "Max total hashtags",
-            "type": "integer",
-            "description": "Maximum number of hashtags to process, including seed and related hashtags.",
-            "minimum": 1,
-            "maximum": 5000,
-            "default": 500,
-            "prefill": 500
-        },
-        "maxPagesPerHashtag": {
-            "title": "Pages per hashtag",
-            "type": "integer",
-            "description": "How many result pages to try per hashtag. Use 1 if you prefer broad discovery through many related hashtags.",
-            "minimum": 1,
-            "maximum": 500,
-            "default": 1,
-            "prefill": 1
-        },
-        "relatedSearchCount": {
-            "title": "Related search count",
-            "type": "integer",
-            "description": "How many related hashtag search results to request per hashtag.",
-            "minimum": 5,
-            "maximum": 100,
-            "default": 50,
-            "prefill": 50
-        },
-        "maxResults": {
-            "title": "Maximum usernames to save",
-            "type": "integer",
-            "description": "Actor stops after saving this many unique Instagram usernames.",
-            "minimum": 1,
-            "maximum": 1000000,
-            "default": 10000,
-            "prefill": 10000
-        },
-        "sessionId": {
-            "title": "Instagram Session ID (sessionid cookie)",
-            "type": "string",
-            "description": "Get from Chrome Console: document.cookie.split(';').find(c=>c.trim().startsWith('sessionid')).split('=')[1]",
-            "editor": "textfield",
-            "isSecret": true
-        },
-        "csrfToken": {
-            "title": "Instagram CSRF Token (csrftoken cookie)",
-            "type": "string",
-            "description": "Get from Chrome Console: document.cookie.split(';').find(c=>c.trim().startsWith('csrftoken')).split('=')[1]",
-            "editor": "textfield",
-            "isSecret": true
-        },
-        "proxyConfiguration": {
-            "title": "Proxy configuration",
-            "type": "object",
-            "description": "Residential proxies strongly recommended.",
-            "editor": "proxy",
-            "default": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"] },
-            "prefill": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"] }
-        }
+  "title": "Instagram Username Extractor (Phase 1)",
+  "description": "Extracts usernames from Instagram hashtags. Auto-discovers related hashtags. Saves state so it survives server migrations.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "hashtags": {
+      "title": "Seed hashtags",
+      "type": "array",
+      "description": "Starting hashtags. Actor auto-discovers related ones up to maxHashtags total.",
+      "editor": "stringList",
+      "default": [
+        "running",
+        "marathon",
+        "halfmarathon",
+        "runnersofinstagram",
+        "runningcoach"
+      ],
+      "prefill": [
+        "running",
+        "marathon",
+        "halfmarathon",
+        "runnersofinstagram",
+        "runningcoach"
+      ]
     },
-    "required": []
+    "maxHashtags": {
+      "title": "Max total hashtags",
+      "type": "integer",
+      "description": "Total hashtags to process (seeds + auto-discovered). Each gives ~20 usernames.",
+      "minimum": 5,
+      "maximum": 3000,
+      "default": 50,
+      "prefill": 50
+    },
+    "maxPagesPerHashtag": {
+      "title": "Pages per hashtag",
+      "type": "integer",
+      "description": "Each page = ~12-24 usernames. Default 50 pages = ~600 usernames per hashtag.",
+      "minimum": 1,
+      "maximum": 1000,
+      "default": 50,
+      "prefill": 50
+    },
+    "sessionId": {
+      "title": "Instagram Session ID",
+      "type": "string",
+      "description": "From Chrome Console: document.cookie.split(';').find(c=>c.trim().startsWith('sessionid')).split('=')[1]",
+      "editor": "textfield",
+      "isSecret": true
+    },
+    "csrfToken": {
+      "title": "Instagram CSRF Token",
+      "type": "string",
+      "description": "From Chrome Console: document.cookie.split(';').find(c=>c.trim().startsWith('csrftoken')).split('=')[1]",
+      "editor": "textfield",
+      "isSecret": true
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
+      },
+      "prefill": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
+      }
+    }
+  },
+  "required": []
 }
